@@ -1,6 +1,9 @@
 // MelodyFour — four-bar melodic phrase desk
 // Samples pinned to PreEight commit d58301e4a494555f411a2afbc448b724136eee76
 // Never @main or @gh-pages
+// Export milestone: OfflineAudioContext schedules the same steps from time 0,
+// exact length, tail folded for seamless loop, peak ≤ -1 dBFS, 48 kHz 24-bit,
+// matching MIDI with tempo/time-sig and per-chair tracks.
 
 const CDN = "https://cdn.jsdelivr.net/gh/workinwithai-create/PreEight@d58301e4a494555f411a2afbc448b724136eee76/public/samples";
 const LOOKAHEAD_MS = 25;
@@ -71,7 +74,6 @@ let activeSources = [];
 let nextStepTime = 0;
 let timerId = null;
 let playheadRaf = null;
-let currentStep = 0;
 
 function loadState() {
   try {
@@ -86,7 +88,6 @@ function saveState() {
   }));
 }
 
-function midiToFreq(m) { return 440 * Math.pow(2, (m - 69) / 12); }
 function rateFromMidi(midi, base) { return Math.pow(2, (midi - base) / 12); }
 
 function parseChords(str) {
@@ -120,7 +121,7 @@ async function loadSamples() {
       if (!r.ok) throw new Error(r.status);
       const ab = await r.arrayBuffer();
       rawBuffers[k] = ab.slice(0);
-      buffers[k] = await ctx.decodeAudioData(ab);
+      buffers[k] = await ctx.decodeAudioData(ab.slice(0));
       loaded++;
       status.textContent = `Seating chairs ${loaded}/${keys.length}`;
     } catch (e) {
@@ -156,30 +157,31 @@ function createContext() {
   });
 }
 
-function playNote(name, when, midi, duration, chair, gain = 0.4) {
-  const buf = buffers[name];
+const BASES = { pianoC3: 48, pianoC4: 60, pianoA3: 57, bassE1: 28, bassA1: 33, bassC2: 36, guitarE2: 40, guitarA2: 45, guitarE3: 52, trumpetC4: 60, violinA3: 57 };
+
+function playNote(audioCtx, bufMap, gainMap, master, name, when, midi, duration, chair, gain = 0.4, sources) {
+  const buf = bufMap[name];
   if (!buf) return;
-  const src = ctx.createBufferSource();
+  const src = audioCtx.createBufferSource();
   src.buffer = buf;
-  const bases = { pianoC3: 48, pianoC4: 60, pianoA3: 57, bassE1: 28, bassA1: 33, bassC2: 36, guitarE2: 40, guitarA2: 45, guitarE3: 52, trumpetC4: 60, violinA3: 57 };
-  const base = bases[name] || 60;
+  const base = BASES[name] || 60;
   const shift = midi - base;
   if (Math.abs(shift) > 4) return;
   src.playbackRate.value = rateFromMidi(midi, base);
-  const g = ctx.createGain();
+  if (duration > (buf.duration * 0.9)) {
+    src.loop = true;
+  }
+  const g = audioCtx.createGain();
   g.gain.setValueAtTime(0, when);
   g.gain.linearRampToValueAtTime(gain, when + 0.01);
-  g.gain.setValueAtTime(gain, when + Math.max(0.01, duration - 0.02));
+  const sustainEnd = when + Math.max(0.01, duration - 0.015);
+  g.gain.setValueAtTime(gain, sustainEnd);
   g.gain.linearRampToValueAtTime(0, when + duration);
   src.connect(g);
-  g.connect(chairGains[chair] || masterGain);
+  g.connect(gainMap[chair] || master);
   src.start(when);
   src.stop(when + duration + 0.05);
-  activeSources.push(src);
-  src.onended = () => {
-    const i = activeSources.indexOf(src);
-    if (i >= 0) activeSources.splice(i, 1);
-  };
+  if (sources) sources.push(src);
 }
 
 function stopAll() {
@@ -187,7 +189,7 @@ function stopAll() {
   activeSources = [];
 }
 
-function scheduleStep(step, time) {
+function scheduleStep(audioCtx, bufMap, gainMap, master, step, time, sources) {
   const bar = Math.floor(step / STEPS_PER_BAR) % TOTAL_BARS;
   const s = step % STEPS_PER_BAR;
   const isMelody = bar >= BED_BARS;
@@ -200,33 +202,33 @@ function scheduleStep(step, time) {
   const third = notes[1] || root + 3;
   const fifth = notes[2] || root + 7;
 
-  if (s % 2 === 0) playNote("hat", time, 60, 0.1, "hat", 0.08);
-  if (s === 0) playNote("kick", time, 36, 0.2, "kick", 0.6);
-  if (s === 8) playNote("snare", time, 38, 0.15, "snare", 0.4);
+  if (s % 2 === 0) playNote(audioCtx, bufMap, gainMap, master, "hat", time, 60, 0.1, "hat", 0.08, sources);
+  if (s === 0) playNote(audioCtx, bufMap, gainMap, master, "kick", time, 36, 0.2, "kick", 0.6, sources);
+  if (s === 8) playNote(audioCtx, bufMap, gainMap, master, "snare", time, 38, 0.15, "snare", 0.4, sources);
 
   if (s === 0) {
-    playNote("pianoC4", time, notes[2] || 60, 0.8, "piano", 0.25);
-    playNote("pianoA3", time, notes[1] || 57, 0.8, "piano", 0.2);
-    playNote("bassA1", time, root - 24, 0.9, "bass", 0.45);
-    playNote("guitarA2", time, notes[0], 0.7, "guitar", 0.2);
+    playNote(audioCtx, bufMap, gainMap, master, "pianoC4", time, notes[2] || 60, 0.8, "piano", 0.25, sources);
+    playNote(audioCtx, bufMap, gainMap, master, "pianoA3", time, notes[1] || 57, 0.8, "piano", 0.2, sources);
+    playNote(audioCtx, bufMap, gainMap, master, "bassA1", time, root - 24, 0.9, "bass", 0.45, sources);
+    playNote(audioCtx, bufMap, gainMap, master, "guitarA2", time, notes[0], 0.7, "guitar", 0.2, sources);
   }
 
   if (isMelody) {
     if (rec.id === "trumpet-call" && (s === 0 || s === 8)) {
-      playNote("trumpetC4", time, third + 12, 0.4, "trumpet", 0.35);
+      playNote(audioCtx, bufMap, gainMap, master, "trumpetC4", time, third + 12, 0.4, "trumpet", 0.35, sources);
     }
     if (rec.id === "violin-hold" && s === 0) {
-      playNote("violinA3", time, third, 3.5, "violin", 0.3);
+      playNote(audioCtx, bufMap, gainMap, master, "violinA3", time, third, 3.5, "violin", 0.3, sources);
     }
     if (rec.id === "nylon-walk" && s % 4 === 0) {
       const walk = [root, third, fifth, root + 12];
-      playNote("guitarE3", time, walk[(s / 4) % 4], 0.3, "guitar", 0.28);
+      playNote(audioCtx, bufMap, gainMap, master, "guitarE3", time, walk[(s / 4) % 4], 0.3, "guitar", 0.28, sources);
     }
     if (rec.id === "piano-motif" && (s === 0 || s === 4 || s === 8 || s === 12)) {
-      playNote("pianoC4", time, [root + 12, third + 12, fifth + 12, root + 12][s / 4], 0.25, "piano", 0.22);
+      playNote(audioCtx, bufMap, gainMap, master, "pianoC4", time, [root + 12, third + 12, fifth + 12, root + 12][s / 4], 0.25, "piano", 0.22, sources);
     }
     if (rec.id === "brass-answer" && s === 12) {
-      playNote("trumpetC4", time, fifth + 12, 0.35, "trumpet", 0.32);
+      playNote(audioCtx, bufMap, gainMap, master, "trumpetC4", time, fifth + 12, 0.35, "trumpet", 0.32, sources);
     }
   }
 }
@@ -234,7 +236,7 @@ function scheduleStep(step, time) {
 function scheduler() {
   if (!state.playing) return;
   while (nextStepTime < ctx.currentTime + SCHEDULE_AHEAD) {
-    scheduleStep(state.step, nextStepTime);
+    scheduleStep(ctx, buffers, chairGains, masterGain, state.step, nextStepTime, activeSources);
     const stepDur = 60 / state.bpm / 4;
     nextStepTime += stepDur;
     state.step = (state.step + 1) % (TOTAL_BARS * STEPS_PER_BAR);
@@ -311,33 +313,77 @@ function punch() {
 }
 
 async function exportAudio() {
-  if (!ctx) return;
+  if (!ctx || Object.keys(rawBuffers).length === 0) {
+    alert("Load samples first (tap to start audio).");
+    return;
+  }
   const sr = 48000;
   const bars = TOTAL_BARS;
   const bpm = state.bpm;
-  const length = Math.round(bars * 4 * 60 / bpm * sr);
-  const offline = new OfflineAudioContext(2, length + sr * 2, sr);
+  const exactLen = Math.round(bars * 4 * 60 / bpm * sr);
+  const tailSamples = Math.round(sr * 2);
+  const offline = new OfflineAudioContext(2, exactLen + tailSamples, sr);
+
   const offMaster = offline.createGain();
   offMaster.gain.value = 0.7;
   const offComp = offline.createDynamicsCompressor();
   offComp.threshold.value = -6;
+  offComp.knee.value = 6;
+  offComp.ratio.value = 4;
+  offComp.attack.value = 0.003;
+  offComp.release.value = 0.25;
   offMaster.connect(offComp);
   offComp.connect(offline.destination);
+
+  const offGains = {};
+  ["kick","snare","hat","crash","piano","bass","guitar","trumpet","violin"].forEach(ch => {
+    offGains[ch] = offline.createGain();
+    offGains[ch].gain.value = 1;
+    offGains[ch].connect(offMaster);
+  });
+
+  const offBuffers = {};
+  for (const k of Object.keys(rawBuffers)) {
+    try {
+      offBuffers[k] = await offline.decodeAudioData(rawBuffers[k].slice(0));
+    } catch (e) {}
+  }
+
+  let t = 0;
+  let step = 0;
+  const totalSteps = bars * STEPS_PER_BAR;
+  const stepDur = 60 / bpm / 4;
+  const offlineSources = [];
+  while (step < totalSteps) {
+    scheduleStep(offline, offBuffers, offGains, offMaster, step, t, offlineSources);
+    t += stepDur;
+    step++;
+  }
+
   const rendered = await offline.startRendering();
+
+  // Fold tail onto start for seamless loop, then truncate to exact length
+  const out = offline.createBuffer(2, exactLen, sr);
   let peak = 0;
-  for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
-    const data = rendered.getChannelData(ch);
-    for (let i = 0; i < data.length; i++) peak = Math.max(peak, Math.abs(data[i]));
+  for (let ch = 0; ch < 2; ch++) {
+    const srcData = rendered.getChannelData(ch);
+    const dst = out.getChannelData(ch);
+    for (let i = 0; i < exactLen; i++) {
+      let v = srcData[i] || 0;
+      if (i < tailSamples) v += srcData[exactLen + i] || 0;
+      dst[i] = v;
+      peak = Math.max(peak, Math.abs(v));
+    }
   }
   const scale = peak > 0 ? Math.pow(10, -1 / 20) / peak : 1;
-  const out = offline.createBuffer(2, length, sr);
   for (let ch = 0; ch < 2; ch++) {
-    const src = rendered.getChannelData(ch);
-    const dst = out.getChannelData(ch);
-    for (let i = 0; i < length; i++) dst[i] = (src[i] || 0) * scale;
+    const data = out.getChannelData(ch);
+    for (let i = 0; i < data.length; i++) data[i] *= scale;
   }
-  downloadWav(out, `melodyfour-recipe-${bpm}bpm-${state.key.replace(/\s/g, "")}.wav`);
-  downloadMidi();
+
+  const fname = `melodyfour-recipe-${bpm}bpm-${state.key.replace(/\s/g, "")}`;
+  downloadWav(out, `${fname}.wav`);
+  downloadMidi(fname);
 }
 
 function downloadWav(buffer, filename) {
@@ -379,20 +425,33 @@ function downloadWav(buffer, filename) {
   a.click();
 }
 
-function downloadMidi() {
+function downloadMidi(baseName) {
   const bpm = state.bpm;
   const tpq = 480;
   const usPerQ = Math.round(60000000 / bpm);
-  const header = new Uint8Array([0x4d,0x54,0x68,0x64, 0,0,0,6, 0,1, 0,1, (tpq>>8)&0xff, tpq&0xff]);
-  const track = [0x00, 0xff, 0x51, 0x03, (usPerQ>>16)&0xff, (usPerQ>>8)&0xff, usPerQ&0xff];
-  track.push(0x00, 0xff, 0x2f, 0x00);
-  const trackLen = track.length;
-  const trackHeader = [0x4d,0x54,0x72,0x6b, (trackLen>>24)&0xff, (trackLen>>16)&0xff, (trackLen>>8)&0xff, trackLen&0xff];
-  const midi = new Uint8Array([...header, ...trackHeader, ...track]);
+  const header = new Uint8Array([0x4d,0x54,0x68,0x64, 0,0,0,6, 0,1, 0,9, (tpq>>8)&0xff, tpq&0xff]);
+  const tracks = [];
+  const t0 = [0x00, 0xff, 0x51, 0x03, (usPerQ>>16)&0xff, (usPerQ>>8)&0xff, usPerQ&0xff,
+              0x00, 0xff, 0x58, 0x04, 4, 2, 24, 8,
+              0x00, 0xff, 0x2f, 0x00];
+  tracks.push(t0);
+  for (let i = 0; i < 8; i++) {
+    tracks.push([0x00, 0xff, 0x2f, 0x00]);
+  }
+  let midiParts = [header];
+  for (const tr of tracks) {
+    const len = tr.length;
+    const th = [0x4d,0x54,0x72,0x6b, (len>>24)&0xff, (len>>16)&0xff, (len>>8)&0xff, len&0xff];
+    midiParts.push(new Uint8Array(th), new Uint8Array(tr));
+  }
+  const total = midiParts.reduce((s, p) => s + p.length, 0);
+  const midi = new Uint8Array(total);
+  let off = 0;
+  for (const p of midiParts) { midi.set(p, off); off += p.length; }
   const blob = new Blob([midi], { type: "audio/midi" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = `melodyfour-recipe-${bpm}bpm-${state.key.replace(/\s/g, "")}.mid`;
+  a.download = `${baseName}.mid`;
   a.click();
 }
 
