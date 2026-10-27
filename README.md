@@ -34,9 +34,9 @@ This is a finite desk. Current build is free (no license gate). A priced build w
 
 Best place to sell: Lemon Squeezy checkout linked from the Vercel landing + a pinned X demo. Bedroom producers and Suno finishers already buy one-shot desks this way.
 
-## Export
+## Export (production-ready milestone)
 
-Default 48 kHz, 24-bit stereo WAV. At 92 BPM / 8 bars the file is exactly 1,001,739 samples. First downbeat at sample 0. Tail folded for seamless loop. Matching MIDI with tempo and one track per chair.
+Default 48 kHz, 24-bit stereo WAV. At 92 BPM / 8 bars the file is exactly 1,001,739 samples. First downbeat at sample 0. Tail folded for seamless loop. Peak ≤ -1 dBFS. Matching MIDI with tempo, time signature, and chair tracks. OfflineAudioContext uses the same schedule path as live playback and the already-loaded raw ArrayBuffers (never re-downloads).
 
 ## Samples
 
